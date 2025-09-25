@@ -21,7 +21,7 @@ class FinancialTools:
     
     def convert_to_usd(self, amount, currency, month):
         """Convert any currency to USD using exchange rates"""
-        if currency == 'USD':
+        if currency == 'USD' or pd.isna(currency):
             return amount
         
         # Handle potential None/NaN values
@@ -42,8 +42,8 @@ class FinancialTools:
                 print(f"Warning: Using latest available {currency} rate ({rate}) for {month}")
                 return amount * rate
             else:
-                print(f"Warning: No exchange rate found for {currency}, returning original amount")
-                return amount
+                print(f"Warning: No exchange rate found for {currency}, assuming USD")
+                return amount  # Assume it's already USD
         
         rate = rate_data.iloc[0]['rate_to_usd']
         return amount * rate
@@ -291,6 +291,137 @@ class FinancialTools:
                 
         except Exception as e:
             return {"error": f"Unexpected error in gross margin calculation: {str(e)}"}
+    
+    def get_opex_breakdown(self, month=None, by_entity=False):
+        """
+        Break down operating expenses by category
+        
+        Args:
+            month: '2025-06' format for specific month, None for all months
+            by_entity: True to show breakdown by entity as well
+        
+        Returns:
+            Dictionary with OpEx breakdown by category
+        """
+        try:
+            # Filter for OpEx accounts (anything starting with "Opex:")
+            opex_data = self.actuals[self.actuals['account_c'].str.startswith('Opex:', na=False)].copy()
+            
+            if opex_data.empty:
+                return {"error": "No operating expense data found"}
+            
+            # Convert to USD
+            opex_data['amount_usd'] = opex_data.apply(
+                lambda row: self.convert_to_usd(row['amount'], row['currency'], row['month']), 
+                axis=1
+            )
+            
+            # Extract category from account name (Opex:Marketing -> Marketing)
+            opex_data['category'] = opex_data['account_c'].str.replace('Opex:', '', regex=False)
+            
+            if month:
+                # Filter for specific month
+                try:
+                    target_month = self._parse_month(month)
+                except ValueError as e:
+                    return {"error": str(e)}
+                    
+                month_data = opex_data[opex_data['month'] == target_month]
+                
+                if month_data.empty:
+                    return {"error": f"No OpEx data found for {month}"}
+                
+                if by_entity:
+                    # Breakdown by category AND entity
+                    breakdown = month_data.groupby(['category', 'entity'])['amount_usd'].sum().reset_index()
+                    
+                    # Organize by category
+                    category_breakdown = {}
+                    for _, row in breakdown.iterrows():
+                        category = row['category']
+                        if category not in category_breakdown:
+                            category_breakdown[category] = {
+                                'total_usd': 0,
+                                'entities': {}
+                            }
+                        category_breakdown[category]['entities'][row['entity']] = row['amount_usd']
+                        category_breakdown[category]['total_usd'] += row['amount_usd']
+                    
+                    # Add formatted totals
+                    for category in category_breakdown:
+                        category_breakdown[category]['total_formatted'] = f"${category_breakdown[category]['total_usd']:,.0f}"
+                        for entity in category_breakdown[category]['entities']:
+                            amount = category_breakdown[category]['entities'][entity]
+                            category_breakdown[category]['entities'][entity] = f"${amount:,.0f}"
+                    
+                    total_opex = sum(cat['total_usd'] for cat in category_breakdown.values())
+                    
+                    return {
+                        "month": month,
+                        "breakdown_by_category_and_entity": category_breakdown,
+                        "total_opex_usd": f"${total_opex:,.0f}",
+                        "categories_count": len(category_breakdown)
+                    }
+                
+                else:
+                    # Simple breakdown by category only
+                    category_totals = month_data.groupby('category')['amount_usd'].sum().reset_index()
+                    category_totals = category_totals.sort_values('amount_usd', ascending=False)
+                    
+                    total_opex = category_totals['amount_usd'].sum()
+                    
+                    # Add percentages
+                    category_breakdown = []
+                    for _, row in category_totals.iterrows():
+                        percentage = (row['amount_usd'] / total_opex * 100) if total_opex > 0 else 0
+                        category_breakdown.append({
+                            'category': row['category'],
+                            'amount_usd': f"${row['amount_usd']:,.0f}",
+                            'percentage': f"{percentage:.1f}%"
+                        })
+                    
+                    return {
+                        "month": month,
+                        "breakdown_by_category": category_breakdown,
+                        "total_opex_usd": f"${total_opex:,.0f}",
+                        "categories_count": len(category_breakdown)
+                    }
+            
+            else:
+                # All months summary
+                monthly_totals = opex_data.groupby(['month', 'category'])['amount_usd'].sum().reset_index()
+                monthly_totals['month_str'] = monthly_totals['month'].dt.strftime('%Y-%m')
+                
+                # Get category totals across all months
+                category_totals = opex_data.groupby('category')['amount_usd'].sum().reset_index()
+                category_totals = category_totals.sort_values('amount_usd', ascending=False)
+                
+                total_opex = category_totals['amount_usd'].sum()
+                
+                category_summary = []
+                for _, row in category_totals.iterrows():
+                    percentage = (row['amount_usd'] / total_opex * 100) if total_opex > 0 else 0
+                    category_summary.append({
+                        'category': row['category'],
+                        'total_amount_usd': f"${row['amount_usd']:,.0f}",
+                        'percentage': f"{percentage:.1f}%"
+                    })
+                
+                # Monthly trend
+                monthly_summary = monthly_totals.groupby('month_str')['amount_usd'].sum().reset_index()
+                monthly_summary['amount_formatted'] = monthly_summary['amount_usd'].apply(lambda x: f"${x:,.0f}")
+                
+                return {
+                    "all_months_summary": {
+                        "category_breakdown": category_summary,
+                        "monthly_totals": monthly_summary[['month_str', 'amount_formatted']].to_dict('records'),
+                        "total_opex_usd": f"${total_opex:,.0f}",
+                        "months_analyzed": len(monthly_summary)
+                    }
+                }
+                
+        except Exception as e:
+            return {"error": f"Unexpected error in OpEx breakdown: {str(e)}"}
 
 # Simple test function
 def test_revenue_tool():
@@ -324,6 +455,36 @@ def test_revenue_tool():
         print(f"{month_data['month']}: {month_data['gross_margin_percent']}% margin")
     
     print(f"\nAverage margin (last 3 months): {trend['summary']['avg_margin']}%")
+    
+    print("\n" + "="*50)
+    print("OPEX BREAKDOWN TESTS")
+    print("="*50)
+    
+    # Test June 2025 OpEx breakdown
+    print("June 2025 OpEx Breakdown by Category:")
+    june_opex = tools.get_opex_breakdown('2025-06')
+    if 'breakdown_by_category' in june_opex:
+        for category in june_opex['breakdown_by_category']:
+            print(f"  {category['category']}: {category['amount_usd']} ({category['percentage']})")
+        print(f"Total OpEx: {june_opex['total_opex_usd']}")
+    else:
+        print(f"Error: {june_opex}")
+    
+    print("\nJune 2025 OpEx Breakdown by Category AND Entity:")
+    june_opex_detailed = tools.get_opex_breakdown('2025-06', by_entity=True)
+    if 'breakdown_by_category_and_entity' in june_opex_detailed:
+        for category, data in june_opex_detailed['breakdown_by_category_and_entity'].items():
+            print(f"  {category}: {data['total_formatted']}")
+            for entity, amount in data['entities'].items():
+                print(f"    - {entity}: {amount}")
+    
+    print("\nAll months OpEx summary:")
+    all_opex = tools.get_opex_breakdown()
+    if 'all_months_summary' in all_opex:
+        print("Top categories across all months:")
+        for category in all_opex['all_months_summary']['category_breakdown'][:3]:  # Show top 3
+            print(f"  {category['category']}: {category['total_amount_usd']} ({category['percentage']})")
+        print(f"Total OpEx (all time): {all_opex['all_months_summary']['total_opex_usd']}")
     
     print("\n" + "="*60)
     print("TESTING EDGE CASES")
