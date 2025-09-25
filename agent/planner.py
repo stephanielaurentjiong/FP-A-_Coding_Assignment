@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from tools import FinancialTools
+from .tools import FinancialTools
 
 class CFOPlanner:
     """AI planner that understands CFO questions and routes them to the right calculators"""
