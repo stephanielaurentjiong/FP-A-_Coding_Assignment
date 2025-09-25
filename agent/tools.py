@@ -422,6 +422,176 @@ class FinancialTools:
                 
         except Exception as e:
             return {"error": f"Unexpected error in OpEx breakdown: {str(e)}"}
+    
+    def get_ebitda(self, month=None, last_n_months=None):
+        """
+        Calculate EBITDA: Revenue - COGS - OpEx
+        
+        Args:
+            month: '2025-06' format for specific month
+            last_n_months: Number of recent months to show trend
+        
+        Returns:
+            Dictionary with EBITDA data and margin percentages
+        """
+        try:
+            # Get all relevant data
+            revenue_data = self.actuals[self.actuals['account_c'] == 'Revenue'].copy()
+            cogs_data = self.actuals[self.actuals['account_c'] == 'COGS'].copy()
+            opex_data = self.actuals[self.actuals['account_c'].str.startswith('Opex:', na=False)].copy()
+            
+            if revenue_data.empty:
+                return {"error": "No revenue data found for EBITDA calculation"}
+            
+            # Convert all to USD
+            revenue_data['amount_usd'] = revenue_data.apply(
+                lambda row: self.convert_to_usd(row['amount'], row['currency'], row['month']), 
+                axis=1
+            )
+            cogs_data['amount_usd'] = cogs_data.apply(
+                lambda row: self.convert_to_usd(row['amount'], row['currency'], row['month']), 
+                axis=1
+            )
+            opex_data['amount_usd'] = opex_data.apply(
+                lambda row: self.convert_to_usd(row['amount'], row['currency'], row['month']), 
+                axis=1
+            )
+            
+            # Group by month
+            monthly_revenue = revenue_data.groupby('month')['amount_usd'].sum()
+            monthly_cogs = cogs_data.groupby('month')['amount_usd'].sum()
+            monthly_opex = opex_data.groupby('month')['amount_usd'].sum()
+            
+            # Calculate EBITDA for each month
+            ebitda_data = []
+            for month_date in monthly_revenue.index:
+                revenue = monthly_revenue[month_date]
+                cogs = monthly_cogs.get(month_date, 0)
+                opex = monthly_opex.get(month_date, 0)
+                
+                gross_profit = revenue - cogs
+                ebitda = revenue - cogs - opex
+                
+                # Calculate margins
+                gross_margin_pct = (gross_profit / revenue * 100) if revenue > 0 else 0
+                ebitda_margin_pct = (ebitda / revenue * 100) if revenue > 0 else 0
+                
+                # Status indicators
+                status = "Normal"
+                if revenue <= 0:
+                    status = "Invalid: Zero or negative revenue"
+                elif ebitda < 0:
+                    status = "Warning: Negative EBITDA"
+                elif ebitda_margin_pct < 10:
+                    status = "Alert: Low EBITDA margin (<10%)"
+                
+                ebitda_entry = {
+                    'month': month_date.strftime('%Y-%m'),
+                    'revenue_usd': revenue,
+                    'cogs_usd': cogs,
+                    'opex_usd': opex,
+                    'gross_profit_usd': gross_profit,
+                    'ebitda_usd': ebitda,
+                    'gross_margin_percent': round(gross_margin_pct, 1),
+                    'ebitda_margin_percent': round(ebitda_margin_pct, 1)
+                }
+                
+                if status != "Normal":
+                    ebitda_entry['status'] = status
+                    
+                ebitda_data.append(ebitda_entry)
+            
+            # Sort by month
+            ebitda_data = sorted(ebitda_data, key=lambda x: x['month'])
+            
+            if month:
+                # Return specific month
+                try:
+                    parsed_month = self._parse_month(month)
+                    target_month = parsed_month.strftime('%Y-%m')
+                except ValueError as e:
+                    return {"error": str(e)}
+                
+                month_data = [m for m in ebitda_data if m['month'] == target_month]
+                if not month_data:
+                    return {"error": f"No EBITDA data found for {month}"}
+                
+                result = month_data[0].copy()
+                result.update({
+                    "revenue_formatted": f"${result['revenue_usd']:,.0f}",
+                    "cogs_formatted": f"${result['cogs_usd']:,.0f}",
+                    "opex_formatted": f"${result['opex_usd']:,.0f}",
+                    "gross_profit_formatted": f"${result['gross_profit_usd']:,.0f}",
+                    "ebitda_formatted": f"${result['ebitda_usd']:,.0f}",
+                    "calculation_breakdown": {
+                        "formula": "EBITDA = Revenue - COGS - OpEx",
+                        "revenue": f"${result['revenue_usd']:,.0f}",
+                        "minus_cogs": f"${result['cogs_usd']:,.0f}",
+                        "minus_opex": f"${result['opex_usd']:,.0f}",
+                        "equals_ebitda": f"${result['ebitda_usd']:,.0f}"
+                    }
+                })
+                return result
+            
+            elif last_n_months:
+                # Return trend for last N months
+                if last_n_months <= 0:
+                    return {"error": "last_n_months must be positive"}
+                    
+                recent_data = ebitda_data[-last_n_months:] if len(ebitda_data) >= last_n_months else ebitda_data
+                
+                if not recent_data:
+                    return {"error": "No EBITDA data available for trend analysis"}
+                
+                # Calculate averages (excluding invalid months)
+                valid_data = [m for m in recent_data if m.get('status') != "Invalid: Zero or negative revenue"]
+                
+                avg_ebitda_margin = 0
+                avg_gross_margin = 0
+                if valid_data:
+                    avg_ebitda_margin = sum(m['ebitda_margin_percent'] for m in valid_data) / len(valid_data)
+                    avg_gross_margin = sum(m['gross_margin_percent'] for m in valid_data) / len(valid_data)
+                
+                return {
+                    "trend_months": last_n_months,
+                    "data": recent_data,
+                    "summary": {
+                        "avg_ebitda_margin": round(avg_ebitda_margin, 1),
+                        "avg_gross_margin": round(avg_gross_margin, 1),
+                        "latest_ebitda_margin": recent_data[-1]['ebitda_margin_percent'] if recent_data else 0,
+                        "latest_ebitda": f"${recent_data[-1]['ebitda_usd']:,.0f}" if recent_data else "$0",
+                        "valid_months": len(valid_data)
+                    }
+                }
+            
+            else:
+                # Return all months summary
+                valid_data = [m for m in ebitda_data if m.get('status') != "Invalid: Zero or negative revenue"]
+                
+                avg_ebitda_margin = 0
+                avg_gross_margin = 0
+                total_ebitda = sum(m['ebitda_usd'] for m in valid_data)
+                
+                if valid_data:
+                    avg_ebitda_margin = sum(m['ebitda_margin_percent'] for m in valid_data) / len(valid_data)
+                    avg_gross_margin = sum(m['gross_margin_percent'] for m in valid_data) / len(valid_data)
+                
+                return {
+                    "all_months": ebitda_data,
+                    "summary": {
+                        "avg_ebitda_margin": round(avg_ebitda_margin, 1),
+                        "avg_gross_margin": round(avg_gross_margin, 1),
+                        "total_ebitda_usd": f"${total_ebitda:,.0f}",
+                        "latest_ebitda_margin": ebitda_data[-1]['ebitda_margin_percent'] if ebitda_data else 0,
+                        "total_months": len(ebitda_data),
+                        "valid_months": len(valid_data),
+                        "months_with_negative_ebitda": len([m for m in ebitda_data if m['ebitda_usd'] < 0])
+                    }
+                }
+                
+        except Exception as e:
+            return {"error": f"Unexpected error in EBITDA calculation: {str(e)}"}
+
 
 # Simple test function
 def test_revenue_tool():
@@ -486,6 +656,44 @@ def test_revenue_tool():
             print(f"  {category['category']}: {category['total_amount_usd']} ({category['percentage']})")
         print(f"Total OpEx (all time): {all_opex['all_months_summary']['total_opex_usd']}")
     
+    print("\n" + "="*50)
+    print("EBITDA TESTS")
+    print("="*50)
+    
+    # Test June 2025 EBITDA
+    print("June 2025 EBITDA Analysis:")
+    june_ebitda = tools.get_ebitda('2025-06')
+    if 'ebitda_formatted' in june_ebitda:
+        print(f"Revenue: {june_ebitda['revenue_formatted']}")
+        print(f"COGS: {june_ebitda['cogs_formatted']}")
+        print(f"OpEx: {june_ebitda['opex_formatted']}")
+        print(f"Gross Profit: {june_ebitda['gross_profit_formatted']} ({june_ebitda['gross_margin_percent']}%)")
+        print(f"EBITDA: {june_ebitda['ebitda_formatted']} ({june_ebitda['ebitda_margin_percent']}%)")
+        
+        if 'status' in june_ebitda:
+            print(f"Status: {june_ebitda['status']}")
+            
+        print("\nCalculation breakdown:")
+        breakdown = june_ebitda['calculation_breakdown']
+        print(f"  {breakdown['revenue']} (Revenue)")
+        print(f"- {breakdown['minus_cogs']} (COGS)")
+        print(f"- {breakdown['minus_opex']} (OpEx)")
+        print(f"= {breakdown['equals_ebitda']} (EBITDA)")
+    else:
+        print(f"Error: {june_ebitda}")
+    
+    print("\nLast 3 months EBITDA trend:")
+    ebitda_trend = tools.get_ebitda(last_n_months=3)
+    if 'data' in ebitda_trend:
+        for month_data in ebitda_trend['data']:
+            status_text = f" ({month_data['status']})" if 'status' in month_data else ""
+            print(f"  {month_data['month']}: ${month_data['ebitda_usd']:,.0f} ({month_data['ebitda_margin_percent']}% margin){status_text}")
+        
+        summary = ebitda_trend['summary']
+        print(f"\nSummary (last 3 months):")
+        print(f"  Average EBITDA margin: {summary['avg_ebitda_margin']}%")
+        print(f"  Latest EBITDA: {summary['latest_ebitda']}")
+    
     print("\n" + "="*60)
     print("TESTING EDGE CASES")
     print("="*60)
@@ -526,6 +734,23 @@ def test_revenue_tool():
     result = tools.get_gross_margin(last_n_months=0)
     if "error" in result:
         print(f"   ✅ Zero months: {result['error']}")
+    
+    print("\n5. Testing OpEx edge cases:")
+    # Test non-existent month for OpEx
+    result = tools.get_opex_breakdown("2099-12")
+    if "error" in result:
+        print(f"   ✅ Non-existent month OpEx: {result['error']}")
+    
+    print("\n6. Testing EBITDA edge cases:")  
+    # Test non-existent month for EBITDA
+    result = tools.get_ebitda("2099-12")
+    if "error" in result:
+        print(f"   ✅ Non-existent month EBITDA: {result['error']}")
+        
+    # Test invalid last_n_months for EBITDA
+    result = tools.get_ebitda(last_n_months=-5)
+    if "error" in result:
+        print(f"   ✅ Negative months EBITDA: {result['error']}")
     
     print("\nAll edge case tests completed! ✅")
 
