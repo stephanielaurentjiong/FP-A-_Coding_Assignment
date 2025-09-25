@@ -591,7 +591,166 @@ class FinancialTools:
                 
         except Exception as e:
             return {"error": f"Unexpected error in EBITDA calculation: {str(e)}"}
-
+    
+    def get_cash_runway(self, as_of_month=None):
+        """
+        Calculate cash runway: months until cash runs out based on recent burn rate
+        Formula: Current Cash ÷ Average Monthly Burn Rate (last 3 months)
+        
+        Args:
+            as_of_month: '2025-06' format for specific month analysis, None for latest
+        
+        Returns:
+            Dictionary with cash runway analysis
+        """
+        try:
+            if self.cash.empty:
+                return {"error": "No cash data found for runway calculation"}
+            
+            # Sort cash data by month to ensure correct ordering
+            cash_sorted = self.cash.sort_values('month')
+            
+            if as_of_month:
+                # Calculate runway as of specific month
+                try:
+                    target_month = self._parse_month(as_of_month)
+                except ValueError as e:
+                    return {"error": str(e)}
+                
+                # Find cash balance for target month
+                current_cash_data = cash_sorted[cash_sorted['month'] == target_month]
+                if current_cash_data.empty:
+                    return {"error": f"No cash data found for {as_of_month}"}
+                
+                current_cash = current_cash_data.iloc[0]['cash_usd']
+                
+                # Get 3 months of cash data ending with target month
+                target_index = cash_sorted[cash_sorted['month'] == target_month].index[0]
+                available_data = cash_sorted.loc[:target_index]
+                
+            else:
+                # Use latest available data
+                current_cash = cash_sorted.iloc[-1]['cash_usd']
+                target_month = cash_sorted.iloc[-1]['month']
+                as_of_month = target_month.strftime('%Y-%m')
+                available_data = cash_sorted
+            
+            if len(available_data) < 2:
+                return {"error": "Need at least 2 months of cash data to calculate burn rate"}
+            
+            # Calculate monthly burn rate (cash decrease) for last 3 months
+            recent_data = available_data.tail(min(4, len(available_data)))  # Get up to 4 months for 3 burn calculations
+            
+            if len(recent_data) < 2:
+                return {"error": "Insufficient cash history for burn rate calculation"}
+            
+            # Calculate month-to-month burn (positive = cash decrease)
+            monthly_burns = []
+            burn_details = []
+            
+            for i in range(1, len(recent_data)):
+                prev_cash = recent_data.iloc[i-1]['cash_usd']
+                curr_cash = recent_data.iloc[i]['cash_usd']
+                burn = prev_cash - curr_cash  # Positive = money going out
+                month_str = recent_data.iloc[i]['month'].strftime('%Y-%m')
+                
+                monthly_burns.append(burn)
+                burn_details.append({
+                    'month': month_str,
+                    'starting_cash': prev_cash,
+                    'ending_cash': curr_cash,
+                    'burn': burn
+                })
+            
+            if not monthly_burns:
+                return {"error": "Could not calculate any monthly burn rates"}
+            
+            # Calculate average burn rate
+            avg_burn = sum(monthly_burns) / len(monthly_burns)
+            
+            # Calculate runway
+            if avg_burn <= 0:
+                runway_months = float('inf')  # Infinite runway if gaining cash or no burn
+                runway_status = "Infinite - company is cash flow positive or stable"
+            else:
+                runway_months = current_cash / avg_burn
+                runway_status = "Normal"
+                
+                # Add status alerts
+                if runway_months < 6:
+                    runway_status = "Critical: Less than 6 months runway"
+                elif runway_months < 12:
+                    runway_status = "Warning: Less than 12 months runway"
+                elif runway_months < 18:
+                    runway_status = "Caution: Less than 18 months runway"
+            
+            # Format runway display
+            if runway_months == float('inf'):
+                runway_display = "Infinite (Cash Flow Positive)"
+                months_remaining = "N/A - Growing Cash"
+            else:
+                runway_display = f"{runway_months:.1f} months"
+                months_remaining = f"{int(runway_months)} months, {int((runway_months % 1) * 30)} days"
+            
+            # Calculate estimated cash depletion date
+            if runway_months != float('inf'):
+                from datetime import timedelta
+                depletion_date = target_month + timedelta(days=runway_months * 30)
+                depletion_date_str = depletion_date.strftime('%Y-%m-%d')
+            else:
+                depletion_date_str = "Never (if current trend continues)"
+            
+            return {
+                "as_of_month": as_of_month,
+                "current_cash_usd": f"${current_cash:,.0f}",
+                "avg_monthly_burn_usd": f"${avg_burn:,.0f}",
+                "runway_months": runway_display,
+                "runway_detailed": months_remaining,
+                "estimated_depletion_date": depletion_date_str,
+                "status": runway_status,
+                "burn_analysis": {
+                    "months_analyzed": len(monthly_burns),
+                    "monthly_burns": [
+                        {
+                            "month": detail['month'],
+                            "burn_usd": f"${detail['burn']:,.0f}",
+                            "cash_start": f"${detail['starting_cash']:,.0f}",
+                            "cash_end": f"${detail['ending_cash']:,.0f}"
+                        }
+                        for detail in burn_details
+                    ],
+                    "burn_trend": "Increasing" if len(monthly_burns) > 1 and monthly_burns[-1] > monthly_burns[0] else "Stable/Decreasing"
+                },
+                "recommendations": self._get_runway_recommendations(runway_months, avg_burn)
+            }
+            
+        except Exception as e:
+            return {"error": f"Unexpected error in cash runway calculation: {str(e)}"}
+    
+    def _get_runway_recommendations(self, runway_months, avg_burn):
+        """Generate CFO recommendations based on runway analysis"""
+        recommendations = []
+        
+        if runway_months == float('inf'):
+            recommendations.append("Excellent: Company is cash flow positive")
+            recommendations.append("Consider investing excess cash or expanding operations")
+        elif runway_months < 6:
+            recommendations.append("URGENT: Immediate action required")
+            recommendations.append("Consider emergency fundraising or cost reduction")
+            recommendations.append("Review all non-essential expenses")
+        elif runway_months < 12:
+            recommendations.append("Start fundraising process immediately")
+            recommendations.append("Review OpEx for potential cost savings")
+            recommendations.append("Accelerate revenue initiatives")
+        elif runway_months < 18:
+            recommendations.append("Begin planning next funding round")
+            recommendations.append("Monitor burn rate closely")
+            recommendations.append("Optimize operational efficiency")
+        else:
+            recommendations.append("Healthy runway - continue monitoring")
+            recommendations.append("Plan for future growth initiatives")
+        
+        return recommendations
 
 # Simple test function
 def test_revenue_tool():
@@ -694,6 +853,39 @@ def test_revenue_tool():
         print(f"  Average EBITDA margin: {summary['avg_ebitda_margin']}%")
         print(f"  Latest EBITDA: {summary['latest_ebitda']}")
     
+    print("\n" + "="*50)
+    print("CASH RUNWAY TESTS")
+    print("="*50)
+    
+    # Test latest cash runway
+    print("Current Cash Runway Analysis:")
+    runway = tools.get_cash_runway()
+    if 'runway_months' in runway:
+        print(f"Current Cash: {runway['current_cash_usd']}")
+        print(f"Average Monthly Burn: {runway['avg_monthly_burn_usd']}")
+        print(f"Runway: {runway['runway_months']} ({runway['runway_detailed']})")
+        print(f"Status: {runway['status']}")
+        print(f"Estimated Depletion: {runway['estimated_depletion_date']}")
+        
+        print(f"\nBurn Rate Analysis (last {runway['burn_analysis']['months_analyzed']} months):")
+        for burn in runway['burn_analysis']['monthly_burns']:
+            print(f"  {burn['month']}: {burn['burn_usd']} burn ({burn['cash_start']} → {burn['cash_end']})")
+        print(f"Trend: {runway['burn_analysis']['burn_trend']}")
+        
+        print(f"\nRecommendations:")
+        for i, rec in enumerate(runway['recommendations'], 1):
+            print(f"  {i}. {rec}")
+    else:
+        print(f"Error: {runway}")
+    
+    # Test specific month runway
+    print(f"\nRunway as of June 2025:")
+    june_runway = tools.get_cash_runway('2025-06')
+    if 'runway_months' in june_runway:
+        print(f"Cash as of June 2025: {june_runway['current_cash_usd']}")
+        print(f"Runway: {june_runway['runway_months']}")
+        print(f"Status: {june_runway['status']}")
+    
     print("\n" + "="*60)
     print("TESTING EDGE CASES")
     print("="*60)
@@ -751,6 +943,17 @@ def test_revenue_tool():
     result = tools.get_ebitda(last_n_months=-5)
     if "error" in result:
         print(f"   ✅ Negative months EBITDA: {result['error']}")
+    
+    print("\n7. Testing Cash Runway edge cases:")
+    # Test non-existent month for runway
+    result = tools.get_cash_runway("2099-12")
+    if "error" in result:
+        print(f"   ✅ Non-existent month runway: {result['error']}")
+    
+    # Test invalid date format for runway  
+    result = tools.get_cash_runway("invalid-date")
+    if "error" in result:
+        print(f"   ✅ Invalid date runway: {result['error'][:50]}...")
     
     print("\nAll edge case tests completed! ✅")
 
