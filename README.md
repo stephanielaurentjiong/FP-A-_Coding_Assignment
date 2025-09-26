@@ -61,15 +61,15 @@ If not installed, use your package manager (e.g., `sudo apt install python3` for
 In your terminal/command prompt, you need to go to the folder where the app is located.
 
 1. Type `cd ` (with a space after "cd")
-2. Drag and drop the cfo-copilot folder from your file browser into the terminal window
+2. Drag and drop the FP-A-_Coding_Assignment folder from your file browser into the terminal window
 3. Press Enter
 
 Example:
 ```bash
-cd /Users/yourname/Desktop/cfo-copilot
+cd /Users/yourname/Desktop/FP-A-_Coding_Assignment
 ```
 
-You should see something like `cfo-copilot$` or similar in your terminal.
+You should see something like `FP-A-_Coding_Assignment$` or similar in your terminal.
 
 ## 🔧 Step 5: Install Required Software
 
@@ -152,7 +152,7 @@ When you're done:
 Next time you want to use the app:
 
 1. Open Terminal/Command Prompt
-2. Navigate to the folder: `cd /path/to/cfo-copilot`
+2. Navigate to the folder: `cd /path/to/FP-A-_Coding_Assignment`
 3. Activate virtual environment:
    - Mac/Linux: `source .venv/bin/activate`
    - Windows: `.venv\Scripts\activate`
@@ -181,7 +181,7 @@ Next time you want to use the app:
 ### Still having issues?
 - Make sure you followed each step exactly
 - Try restarting your terminal and starting over
-- Check that all files are in the cfo-copilot folder
+- Check that all files are in the FP-A-_Coding_Assignment folder
 
 ## 📞 Need Help?
 
