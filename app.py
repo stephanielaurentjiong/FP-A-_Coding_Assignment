@@ -250,7 +250,39 @@ def main():
                             # Display text response
                             if 'response' in response:
                                 st.markdown(response['response'])
-                            
+
+                            # Display data quality warnings if present
+                            if 'data' in response and 'data_quality_warnings' in response['data']:
+                                with st.expander("🔍 Data Quality Analysis", expanded=True):
+                                    st.warning("**Data Quality Alerts Detected**")
+                                    st.info("""
+                                    **What are Data Quality Alerts?**
+
+                                    These alerts flag when financial data appears unusually consistent or unrealistic:
+
+                                    • **Identical values** - Real business metrics naturally vary month-to-month
+                                    • **Low variation** - Standard deviation below 2% suggests artificial data
+                                    • **Unrealistic margins** - Very high margins (>80% gross, >40% EBITDA) are rare
+                                    • **Perfect consistency** - Real businesses have seasonal patterns and volatility
+
+                                    These warnings help identify test/demo data vs real business metrics.
+                                    """)
+
+                                    for warning in response['data']['data_quality_warnings']:
+                                        st.write(f"⚠️ {warning}")
+
+                                    if 'statistics' in response['data']:
+                                        stats = response['data']['statistics']
+                                        col_a, col_b, col_c, col_d = st.columns(4)
+                                        with col_a:
+                                            st.metric("Mean", f"{stats['mean']}%")
+                                        with col_b:
+                                            st.metric("Std Dev", f"{stats['std_dev']}%")
+                                        with col_c:
+                                            st.metric("Range", f"{stats['range']}%")
+                                        with col_d:
+                                            st.metric("Min/Max", f"{stats['min']}% / {stats['max']}%")
+
                             # Display chart if available
                             if 'data' in response:
                                 data = response['data']

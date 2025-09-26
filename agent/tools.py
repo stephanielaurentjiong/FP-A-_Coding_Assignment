@@ -47,7 +47,103 @@ class FinancialTools:
         
         rate = rate_data.iloc[0]['rate_to_usd']
         return amount * rate
-    
+
+    def _validate_margin_consistency(self, margins, metric_name="Gross Margin", threshold=2.0):
+        """
+        Flag if margins are suspiciously consistent across time periods
+
+        Args:
+            margins: List of margin percentages
+            metric_name: Name of metric for warning message
+            threshold: Standard deviation threshold below which to flag (default 2.0%)
+
+        Returns:
+            dict with warning if margins are too consistent
+        """
+        if len(margins) < 3:
+            return {}
+
+        # Calculate statistics
+        import statistics
+        std_dev = statistics.stdev(margins)
+        mean_margin = statistics.mean(margins)
+        min_margin = min(margins)
+        max_margin = max(margins)
+        range_margin = max_margin - min_margin
+
+        warnings = []
+
+        # Flag suspiciously low standard deviation
+        if std_dev < threshold:
+            warnings.append(f"{metric_name} shows unusually low variation (std dev: {std_dev:.2f}%)")
+
+        # Flag if all margins are identical
+        if range_margin == 0:
+            warnings.append(f"All {metric_name} values are identical ({mean_margin:.1f}%)")
+
+        # Flag if margins are unrealistically high
+        if metric_name == "Gross Margin" and mean_margin > 80:
+            warnings.append(f"{metric_name} average ({mean_margin:.1f}%) is unusually high for most businesses")
+        elif metric_name == "EBITDA Margin" and mean_margin > 40:
+            warnings.append(f"{metric_name} average ({mean_margin:.1f}%) is unusually high for most businesses")
+
+        # Flag if too consistent within a tight range
+        if range_margin < 1.0 and std_dev < 0.5:
+            warnings.append(f"{metric_name} varies by less than 1% across all periods (range: {range_margin:.2f}%)")
+
+        if warnings:
+            return {
+                "data_quality_warnings": warnings,
+                "statistics": {
+                    "mean": round(mean_margin, 2),
+                    "std_dev": round(std_dev, 2),
+                    "min": min_margin,
+                    "max": max_margin,
+                    "range": round(range_margin, 2)
+                }
+            }
+
+        return {}
+
+    def _validate_business_metrics(self, data_type, values):
+        """
+        Validate business metrics for realistic ranges and patterns
+
+        Args:
+            data_type: 'revenue', 'margin', 'ebitda', etc.
+            values: List of values to validate
+
+        Returns:
+            dict with warnings if metrics seem unrealistic
+        """
+        if not values or len(values) < 2:
+            return {}
+
+        warnings = []
+
+        if data_type == 'revenue':
+            # Check for unrealistic revenue patterns
+            growth_rates = []
+            for i in range(1, len(values)):
+                if values[i-1] > 0:
+                    growth = ((values[i] - values[i-1]) / values[i-1]) * 100
+                    growth_rates.append(growth)
+
+            if growth_rates:
+                avg_growth = sum(growth_rates) / len(growth_rates)
+                if abs(avg_growth) > 20:  # More than 20% average month-over-month growth
+                    warnings.append(f"Revenue shows unusually high average monthly growth rate: {avg_growth:.1f}%")
+
+        elif data_type == 'cash_burn':
+            # Check for unrealistic burn patterns
+            if all(abs(v - values[0]) < 1000 for v in values):  # All burns within $1k of each other
+                warnings.append("Cash burn rates are unusually consistent across months")
+
+        if warnings:
+            return {"business_logic_warnings": warnings}
+
+        return {}
+
     def _parse_month(self, month_str):
         """Parse month string and return datetime, with error handling"""
         try:
@@ -78,7 +174,7 @@ class FinancialTools:
         """
         try:
             # Filter actuals for revenue only
-            revenue_actuals = self.actuals[self.actuals['account_c'] == 'Revenue'].copy()
+            revenue_actuals = self.actuals[self.actuals['account_category'] == 'Revenue'].copy()
             
             if revenue_actuals.empty:
                 return {"error": "No revenue data found in actuals"}
@@ -117,7 +213,7 @@ class FinancialTools:
                 # Add budget comparison if requested
                 if vs_budget:
                     budget_data = self.budget[
-                        (self.budget['account_c'] == 'Revenue') & 
+                        (self.budget['account_category'] == 'Revenue') & 
                         (self.budget['month'] == target_month)
                     ].copy()
                     
@@ -175,8 +271,8 @@ class FinancialTools:
         """
         try:
             # Get revenue and COGS data, convert to USD
-            revenue_data = self.actuals[self.actuals['account_c'] == 'Revenue'].copy()
-            cogs_data = self.actuals[self.actuals['account_c'] == 'COGS'].copy()
+            revenue_data = self.actuals[self.actuals['account_category'] == 'Revenue'].copy()
+            cogs_data = self.actuals[self.actuals['account_category'] == 'COGS'].copy()
             
             if revenue_data.empty:
                 return {"error": "No revenue data found for gross margin calculation"}
@@ -264,8 +360,9 @@ class FinancialTools:
                 
                 # Calculate averages only from valid margins
                 valid_margins = [m['gross_margin_percent'] for m in recent_data if m.get('status') != "Invalid: Zero or negative revenue"]
-                
-                return {
+
+                # Add data validation warnings
+                result = {
                     "trend_months": last_n_months,
                     "data": recent_data,
                     "summary": {
@@ -274,12 +371,19 @@ class FinancialTools:
                         "valid_months": len(valid_margins)
                     }
                 }
+
+                # Add data quality validation
+                validation_result = self._validate_margin_consistency(valid_margins, "Gross Margin")
+                if validation_result:
+                    result.update(validation_result)
+
+                return result
             
             else:
                 # Return all months
                 valid_margins = [m['gross_margin_percent'] for m in gross_margin_data if m.get('status') != "Invalid: Zero or negative revenue"]
-                
-                return {
+
+                result = {
                     "all_months": gross_margin_data,
                     "summary": {
                         "avg_margin": round(sum(valid_margins) / len(valid_margins), 1) if valid_margins else 0,
@@ -288,6 +392,13 @@ class FinancialTools:
                         "valid_months": len(valid_margins)
                     }
                 }
+
+                # Add data quality validation for all months
+                validation_result = self._validate_margin_consistency(valid_margins, "Gross Margin")
+                if validation_result:
+                    result.update(validation_result)
+
+                return result
                 
         except Exception as e:
             return {"error": f"Unexpected error in gross margin calculation: {str(e)}"}
@@ -305,7 +416,7 @@ class FinancialTools:
         """
         try:
             # Filter for OpEx accounts (anything starting with "Opex:")
-            opex_data = self.actuals[self.actuals['account_c'].str.startswith('Opex:', na=False)].copy()
+            opex_data = self.actuals[self.actuals['account_category'].str.startswith('Opex:', na=False)].copy()
             
             if opex_data.empty:
                 return {"error": "No operating expense data found"}
@@ -317,7 +428,7 @@ class FinancialTools:
             )
             
             # Extract category from account name (Opex:Marketing -> Marketing)
-            opex_data['category'] = opex_data['account_c'].str.replace('Opex:', '', regex=False)
+            opex_data['category'] = opex_data['account_category'].str.replace('Opex:', '', regex=False)
             
             if month:
                 # Filter for specific month
@@ -436,9 +547,9 @@ class FinancialTools:
         """
         try:
             # Get all relevant data
-            revenue_data = self.actuals[self.actuals['account_c'] == 'Revenue'].copy()
-            cogs_data = self.actuals[self.actuals['account_c'] == 'COGS'].copy()
-            opex_data = self.actuals[self.actuals['account_c'].str.startswith('Opex:', na=False)].copy()
+            revenue_data = self.actuals[self.actuals['account_category'] == 'Revenue'].copy()
+            cogs_data = self.actuals[self.actuals['account_category'] == 'COGS'].copy()
+            opex_data = self.actuals[self.actuals['account_category'].str.startswith('Opex:', na=False)].copy()
             
             if revenue_data.empty:
                 return {"error": "No revenue data found for EBITDA calculation"}
@@ -551,8 +662,8 @@ class FinancialTools:
                 if valid_data:
                     avg_ebitda_margin = sum(m['ebitda_margin_percent'] for m in valid_data) / len(valid_data)
                     avg_gross_margin = sum(m['gross_margin_percent'] for m in valid_data) / len(valid_data)
-                
-                return {
+
+                result = {
                     "trend_months": last_n_months,
                     "data": recent_data,
                     "summary": {
@@ -563,6 +674,14 @@ class FinancialTools:
                         "valid_months": len(valid_data)
                     }
                 }
+
+                # Add EBITDA margin validation
+                valid_ebitda_margins = [m['ebitda_margin_percent'] for m in valid_data]
+                validation_result = self._validate_margin_consistency(valid_ebitda_margins, "EBITDA Margin")
+                if validation_result:
+                    result.update(validation_result)
+
+                return result
             
             else:
                 # Return all months summary
@@ -575,8 +694,8 @@ class FinancialTools:
                 if valid_data:
                     avg_ebitda_margin = sum(m['ebitda_margin_percent'] for m in valid_data) / len(valid_data)
                     avg_gross_margin = sum(m['gross_margin_percent'] for m in valid_data) / len(valid_data)
-                
-                return {
+
+                result = {
                     "all_months": ebitda_data,
                     "summary": {
                         "avg_ebitda_margin": round(avg_ebitda_margin, 1),
@@ -588,6 +707,14 @@ class FinancialTools:
                         "months_with_negative_ebitda": len([m for m in ebitda_data if m['ebitda_usd'] < 0])
                     }
                 }
+
+                # Add EBITDA margin validation for all months
+                valid_ebitda_margins = [m['ebitda_margin_percent'] for m in valid_data]
+                validation_result = self._validate_margin_consistency(valid_ebitda_margins, "EBITDA Margin")
+                if validation_result:
+                    result.update(validation_result)
+
+                return result
                 
         except Exception as e:
             return {"error": f"Unexpected error in EBITDA calculation: {str(e)}"}
@@ -606,9 +733,16 @@ class FinancialTools:
         try:
             if self.cash.empty:
                 return {"error": "No cash data found for runway calculation"}
-            
+
+            # Clean cash data - remove empty rows and NaT values
+            cash_clean = self.cash.dropna(subset=['month', 'cash_usd']).copy()
+            cash_clean = cash_clean[cash_clean['month'].notna() & cash_clean['cash_usd'].notna()]
+
+            if cash_clean.empty:
+                return {"error": "No valid cash data found after cleaning"}
+
             # Sort cash data by month to ensure correct ordering
-            cash_sorted = self.cash.sort_values('month')
+            cash_sorted = cash_clean.sort_values('month')
             
             if as_of_month:
                 # Calculate runway as of specific month
@@ -632,7 +766,13 @@ class FinancialTools:
                 # Use latest available data
                 current_cash = cash_sorted.iloc[-1]['cash_usd']
                 target_month = cash_sorted.iloc[-1]['month']
-                as_of_month = target_month.strftime('%Y-%m')
+
+                # Safely format the date
+                try:
+                    as_of_month = target_month.strftime('%Y-%m')
+                except (AttributeError, ValueError):
+                    return {"error": f"Invalid date format in cash data: {target_month}"}
+
                 available_data = cash_sorted
             
             if len(available_data) < 2:
@@ -694,9 +834,12 @@ class FinancialTools:
             
             # Calculate estimated cash depletion date
             if runway_months != float('inf'):
-                from datetime import timedelta
-                depletion_date = target_month + timedelta(days=runway_months * 30)
-                depletion_date_str = depletion_date.strftime('%Y-%m-%d')
+                try:
+                    from datetime import timedelta
+                    depletion_date = target_month + timedelta(days=runway_months * 30)
+                    depletion_date_str = depletion_date.strftime('%Y-%m-%d')
+                except (TypeError, ValueError, AttributeError):
+                    depletion_date_str = f"Approximately {runway_months:.1f} months from latest data"
             else:
                 depletion_date_str = "Never (if current trend continues)"
             

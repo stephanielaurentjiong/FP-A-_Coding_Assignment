@@ -52,7 +52,10 @@ class CFOPlanner:
         # Check for trend analysis
         result['trend_analysis'] = any(keyword in question_lower for keyword in self.trend_keywords)
         if result['trend_analysis']:
-            result['trend_months'] = self._extract_trend_months(question)
+            trend_info = self._extract_trend_months(question)
+            result['trend_months'] = trend_info['months']
+            result['display_period'] = trend_info['display_period']
+            result['original_unit'] = trend_info['original_unit']
         
         # Check for entity breakdown
         result['by_entity'] = any(keyword in question_lower for keyword in ['by entity', 'by company', 'parentco', 'emea', 'breakdown by'])
@@ -148,29 +151,60 @@ class CFOPlanner:
         return None
     
     def _extract_trend_months(self, question):
-        """Extract number of months for trend analysis"""
-        # Look for patterns like "last 3 months", "past 6 months"
-        patterns = [
+        """Extract number of months for trend analysis, handling years conversion"""
+        question_lower = question.lower()
+        
+        # Look for year-based patterns first
+        year_patterns = [
+            r'last\s+(\d+)\s+years?',
+            r'past\s+(\d+)\s+years?', 
+            r'(\d+)\s+years?'
+        ]
+        
+        for pattern in year_patterns:
+            match = re.search(pattern, question_lower)
+            if match:
+                try:
+                    num_years = int(match.group(1))
+                    if 1 <= num_years <= 10:  # Reasonable range
+                        months = num_years * 12
+                        # Store original period description for display
+                        return {
+                            'months': months,
+                            'display_period': f"{num_years} year{'s' if num_years > 1 else ''}",
+                            'original_unit': 'years'
+                        }
+                except:
+                    continue
+        
+        # Look for month-based patterns
+        month_patterns = [
             r'last\s+(\d+)\s+months?',
             r'past\s+(\d+)\s+months?',
             r'recent\s+(\d+)\s+months?',
             r'(\d+)\s+months?'
         ]
         
-        question_lower = question.lower()
-        
-        for pattern in patterns:
+        for pattern in month_patterns:
             match = re.search(pattern, question_lower)
             if match:
                 try:
                     num_months = int(match.group(1))
-                    if 1 <= num_months <= 24:  # Reasonable range
-                        return num_months
+                    if 1 <= num_months <= 120:  # Up to 10 years in months
+                        return {
+                            'months': num_months,
+                            'display_period': f"{num_months} month{'s' if num_months > 1 else ''}",
+                            'original_unit': 'months'
+                        }
                 except:
                     continue
         
         # Default trend period
-        return 3
+        return {
+            'months': 3,
+            'display_period': '3 months',
+            'original_unit': 'months'
+        }
     
     def answer_question(self, question):
         """
@@ -242,14 +276,21 @@ class CFOPlanner:
     def _handle_margin_question(self, classification, question):
         """Handle gross margin questions"""
         if classification['trend_analysis']:
-            months = classification['trend_months'] or 3
+            months = classification['trend_months']
+            display_period = classification.get('display_period', f"{months} months")
             result = self.tools.get_gross_margin(last_n_months=months)
             if 'error' not in result:
-                response = f"**Gross Margin Trend (Last {months} Months):**\n\n"
+                response = f"**Gross Margin Trend (Last {display_period}):**\n\n"
                 for month_data in result['data']:
                     response += f"• {month_data['month']}: {month_data['gross_margin_percent']}%\n"
                 response += f"\n**Average Margin:** {result['summary']['avg_margin']}%\n"
                 response += f"**Latest Margin:** {result['summary']['latest_margin']}%"
+
+                # Add data quality warnings if present
+                if 'data_quality_warnings' in result:
+                    response += f"\n\n⚠️ **Data Quality Alerts:**\n"
+                    for warning in result['data_quality_warnings']:
+                        response += f"• {warning}\n"
                 
                 return {"response": response, "data": result}
             else:
@@ -277,7 +318,7 @@ class CFOPlanner:
                 return result
         else:
             # Default to 3-month trend
-            return self._handle_margin_question({**classification, 'trend_analysis': True, 'trend_months': 3}, question)
+            return self._handle_margin_question({**classification, 'trend_analysis': True, 'trend_months': 3, 'display_period': '3 months'}, question)
     
     def _handle_opex_question(self, classification, question):
         """Handle operating expense questions"""
@@ -317,10 +358,11 @@ class CFOPlanner:
     def _handle_ebitda_question(self, classification, question):
         """Handle EBITDA questions"""
         if classification['trend_analysis']:
-            months = classification['trend_months'] or 3
+            months = classification['trend_months']
+            display_period = classification.get('display_period', f"{months} months")
             result = self.tools.get_ebitda(last_n_months=months)
             if 'error' not in result:
-                response = f"**EBITDA Trend (Last {months} Months):**\n\n"
+                response = f"**EBITDA Trend (Last {display_period}):**\n\n"
                 for month_data in result['data']:
                     status_text = f" ({month_data['status']})" if 'status' in month_data else ""
                     response += f"• {month_data['month']}: ${month_data['ebitda_usd']:,.0f} ({month_data['ebitda_margin_percent']}%){status_text}\n"
@@ -328,6 +370,12 @@ class CFOPlanner:
                 response += f"\n**Summary:**\n"
                 response += f"• Average EBITDA Margin: {result['summary']['avg_ebitda_margin']}%\n"
                 response += f"• Latest EBITDA: {result['summary']['latest_ebitda']}"
+
+                # Add data quality warnings if present
+                if 'data_quality_warnings' in result:
+                    response += f"\n\n⚠️ **Data Quality Alerts:**\n"
+                    for warning in result['data_quality_warnings']:
+                        response += f"• {warning}\n"
                 
                 return {"response": response, "data": result}
             else:
@@ -355,7 +403,7 @@ class CFOPlanner:
                 return result
         else:
             # Default to 3-month trend
-            return self._handle_ebitda_question({**classification, 'trend_analysis': True, 'trend_months': 3}, question)
+            return self._handle_ebitda_question({**classification, 'trend_analysis': True, 'trend_months': 3, 'display_period': '3 months'}, question)
     
     def _handle_cash_question(self, classification, question):
         """Handle cash runway questions"""
@@ -379,6 +427,123 @@ class CFOPlanner:
             return {"response": response, "data": result}
         else:
             return result
+    
+    def _handle_executive_dashboard(self, question):
+        """Handle broad questions like 'How are we doing?' with comprehensive overview"""
+        try:
+            response = "# Executive Financial Dashboard\n\n"
+            
+            # Get latest available month for analysis
+            latest_data_month = "2025-06"  # From our sample data
+            
+            # 1. Revenue Performance
+            revenue_result = self.tools.get_revenue(latest_data_month, vs_budget=True)
+            if 'error' not in revenue_result:
+                response += "## Revenue Performance\n"
+                response += f"• **Latest Month ({latest_data_month}):** {revenue_result['actual_revenue_usd']}\n"
+                if 'variance_percent' in revenue_result:
+                    variance_pct = float(revenue_result['variance_percent'].rstrip('%'))
+                    status = "📈 Above Budget" if variance_pct > 0 else "📉 Below Budget" if variance_pct < -5 else "✅ On Track"
+                    response += f"• **vs Budget:** {revenue_result['variance_usd']} ({revenue_result['variance_percent']}) {status}\n\n"
+            
+            # 2. Profitability Analysis
+            ebitda_result = self.tools.get_ebitda(latest_data_month)
+            margin_result = self.tools.get_gross_margin(latest_data_month)
+            
+            if 'error' not in ebitda_result and 'error' not in margin_result:
+                response += "## Profitability Health\n"
+                response += f"• **Gross Margin:** {margin_result['gross_margin_percent']}%\n"
+                response += f"• **EBITDA:** {ebitda_result['ebitda_formatted']} ({ebitda_result['ebitda_margin_percent']}%)\n"
+                
+                # Health indicators
+                if ebitda_result['ebitda_margin_percent'] > 30:
+                    response += "• **Status:** 🎯 Excellent profitability\n\n"
+                elif ebitda_result['ebitda_margin_percent'] > 15:
+                    response += "• **Status:** ✅ Good profitability\n\n"
+                else:
+                    response += "• **Status:** ⚠️ Profitability needs attention\n\n"
+            
+            # 3. Cost Structure
+            opex_result = self.tools.get_opex_breakdown(latest_data_month)
+            if 'error' not in opex_result and 'breakdown_by_category' in opex_result:
+                response += "## Cost Structure\n"
+                response += f"• **Total OpEx:** {opex_result['total_opex_usd']}\n"
+                response += "• **Top Categories:**\n"
+                for category in opex_result['breakdown_by_category'][:3]:
+                    response += f"  - {category['category']}: {category['amount_usd']} ({category['percentage']})\n"
+                response += "\n"
+            
+            # 4. Cash Position
+            cash_result = self.tools.get_cash_runway()
+            if 'error' not in cash_result:
+                response += "## Cash & Runway\n"
+                response += f"• **Current Cash:** {cash_result['current_cash_usd']}\n"
+                response += f"• **Monthly Burn:** {cash_result['avg_monthly_burn_usd']}\n"
+                response += f"• **Runway:** {cash_result['runway_months']}\n"
+                
+                # Runway health indicator
+                runway_num = float(cash_result['runway_months'].split()[0]) if 'months' in cash_result['runway_months'] else float('inf')
+                if runway_num > 18:
+                    response += "• **Status:** 💰 Strong cash position\n\n"
+                elif runway_num > 12:
+                    response += "• **Status:** ✅ Adequate runway\n\n"
+                elif runway_num > 6:
+                    response += "• **Status:** ⚠️ Monitor closely\n\n"
+                else:
+                    response += "• **Status:** 🚨 Critical - need funding\n\n"
+            
+            # 5. Executive Summary & Recommendations
+            response += "## Executive Summary\n"
+            
+            # Generate overall health score based on metrics
+            health_indicators = []
+            if 'variance_percent' in revenue_result:
+                variance = float(revenue_result['variance_percent'].rstrip('%'))
+                health_indicators.append("revenue_healthy" if variance > -10 else "revenue_concern")
+            
+            if 'ebitda_margin_percent' in ebitda_result:
+                ebitda_margin = ebitda_result['ebitda_margin_percent']
+                health_indicators.append("profit_healthy" if ebitda_margin > 20 else "profit_concern")
+            
+            if 'runway_months' in cash_result:
+                runway_months = float(cash_result['runway_months'].split()[0]) if 'months' in cash_result['runway_months'] else 100
+                health_indicators.append("cash_healthy" if runway_months > 12 else "cash_concern")
+            
+            healthy_count = len([h for h in health_indicators if "healthy" in h])
+            total_metrics = len(health_indicators)
+            
+            if healthy_count >= 2:
+                response += "**Overall Assessment:** 🎯 **Strong Performance** - Company fundamentals are solid\n\n"
+                response += "**Key Recommendations:**\n"
+                response += "1. Continue current growth trajectory\n"
+                response += "2. Consider strategic investments or expansion\n"
+                response += "3. Monitor market opportunities\n"
+            else:
+                response += "**Overall Assessment:** ⚠️ **Areas Need Attention** - Some metrics require focus\n\n"
+                response += "**Key Recommendations:**\n"
+                response += "1. Review underperforming metrics closely\n"
+                response += "2. Consider cost optimization strategies\n"
+                response += "3. Accelerate revenue initiatives if needed\n"
+            
+            return {
+                "response": response,
+                "data": {
+                    "dashboard_type": "executive_overview",
+                    "analysis_month": latest_data_month,
+                    "revenue": revenue_result,
+                    "ebitda": ebitda_result,
+                    "margin": margin_result,
+                    "opex": opex_result,
+                    "cash": cash_result,
+                    "health_score": f"{healthy_count}/{total_metrics}"
+                }
+            }
+            
+        except Exception as e:
+            return {
+                "error": f"Error generating executive dashboard: {str(e)}",
+                "suggestion": "Please try asking about specific metrics like revenue, margins, or cash runway."
+            }
     
     def _handle_unknown_question(self, question):
         """Handle questions we don't understand"""
@@ -404,7 +569,9 @@ def test_planner():
         "Break down Opex by category for June",
         "What is our cash runway right now?",
         "What's our EBITDA for June 2025?",
-        "How are we doing this quarter?",  # Unknown question
+        "How are we doing this quarter?",  # Executive dashboard question
+        "Give me a performance summary",    # Another broad question
+        "Can you help me with derivatives?",  # Truly unknown question
     ]
     
     for question in test_questions:
