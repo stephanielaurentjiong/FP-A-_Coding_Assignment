@@ -8,15 +8,15 @@ class CFOPlanner:
     def __init__(self):
         self.tools = FinancialTools()
         
-        # Keywords that help identify question types
-        self.revenue_keywords = ['revenue', 'sales', 'income', 'topline', 'budget', 'vs budget', 'actual vs budget']
-        self.margin_keywords = ['margin', 'gross margin', 'profit margin', 'profitability']
-        self.opex_keywords = ['opex', 'operating expense', 'expenses', 'spending', 'costs', 'breakdown', 'categories']
-        self.ebitda_keywords = ['ebitda', 'earnings', 'profit', 'profitability', 'operational profit']
-        self.cash_keywords = ['cash', 'runway', 'burn', 'cash flow', 'months left', 'depletion']
+        # Keywords that help identify question types (more flexible)
+        self.revenue_keywords = ['revenue', 'sales', 'income', 'topline', 'budget', 'vs budget', 'actual vs budget', 'rev', 'top line', 'versus budget', 'against budget', 'compared to budget']
+        self.margin_keywords = ['margin', 'gross margin', 'profit margin', 'profitability', 'margins', 'gm', 'gross', 'profit']
+        self.opex_keywords = ['opex', 'operating expense', 'expenses', 'spending', 'costs', 'breakdown', 'categories', 'operational expenses', 'operating costs', 'spend', 'expense', 'cost breakdown']
+        self.ebitda_keywords = ['ebitda', 'earnings', 'profit', 'profitability', 'operational profit', 'operating profit', 'ebit']
+        self.cash_keywords = ['cash', 'runway', 'burn', 'cash flow', 'months left', 'depletion', 'burn rate', 'cash position', 'how long', 'cash runway', 'funding runway']
         
-        # Trend analysis keywords
-        self.trend_keywords = ['trend', 'trends', 'last', 'recent', 'months', 'quarterly', 'over time']
+        # Trend analysis keywords (more flexible)
+        self.trend_keywords = ['trend', 'trends', 'last', 'recent', 'months', 'quarterly', 'over time', 'past', 'historical', 'history', 'show', 'track', 'analysis', 'pattern', 'change', 'evolution', 'progression']
     
     def classify_question(self, question):
         """
@@ -75,7 +75,7 @@ class CFOPlanner:
         result['confidence'] = best_intent[1]
         
         # If confidence is very low, mark as unknown
-        if result['confidence'] < 0.1:
+        if result['confidence'] < 0.3:
             result['intent'] = 'unknown'
         
         return result
@@ -83,19 +83,29 @@ class CFOPlanner:
     def _calculate_score(self, question, keywords):
         """Calculate relevance score based on keyword matches"""
         score = 0
-        words = question.split()
-        
+        question_lower = question.lower()
+        words = question_lower.split()
+
         for keyword in keywords:
-            if keyword in question:
+            keyword_lower = keyword.lower()
+            if keyword_lower in question_lower:
                 # Exact phrase match gets higher score
-                score += 1.0
-        
+                # But only if it's a meaningful match (not just partial word)
+                if len(keyword_lower) > 3 or keyword_lower in ['rev', 'gm']:
+                    score += 1.0
+                elif keyword_lower == 'how' and 'how long' not in question_lower:
+                    # Don't match standalone "how" unless it's "how long"
+                    continue
+                else:
+                    score += 1.0
+
         for word in words:
             for keyword in keywords:
-                if word in keyword.split():
-                    # Individual word match gets lower score
-                    score += 0.3
-        
+                keyword_words = keyword.lower().split()
+                if word in keyword_words and len(word) > 2:
+                    # Individual word match gets lower score, but only for meaningful words
+                    score += 0.2
+
         return min(score, 3.0)  # Cap at 3.0
     
     def _extract_month(self, question):
@@ -106,8 +116,10 @@ class CFOPlanner:
             r'(\d{1,2})/(\d{4})',  # 06/2025
             r'(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})',  # June 2025
             r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})',  # Jun 2025
-            r'(?:for|in)\s+(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?',  # for June, in June
-            r'(?:for|in)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:\s+(\d{4}))?'  # for Jun, in Jun
+            r'(?:for|in|about|during)\s+(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?',  # for June, about June
+            r'(?:for|in|about|during)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:\s+(\d{4}))?',  # for Jun, about Jun
+            r'\b(january|february|march|april|may|june|july|august|september|october|november|december)\b(?:\s+(\d{4}))?',  # standalone June
+            r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b(?:\s+(\d{4}))?'  # standalone Jun
         ]
         
         question_lower = question.lower()
@@ -157,15 +169,23 @@ class CFOPlanner:
         # Look for year-based patterns first
         year_patterns = [
             r'last\s+(\d+)\s+years?',
-            r'past\s+(\d+)\s+years?', 
-            r'(\d+)\s+years?'
+            r'past\s+(\d+)\s+years?',
+            r'(\d+)\s+years?',
+            r'last\s+year',  # "last year" = 1 year = 12 months
+            r'past\s+year'   # "past year" = 1 year = 12 months
         ]
         
         for pattern in year_patterns:
             match = re.search(pattern, question_lower)
             if match:
                 try:
-                    num_years = int(match.group(1))
+                    if 'year' in pattern and '(' not in pattern:
+                        # Patterns like "last year" or "past year" (no number group)
+                        num_years = 1
+                    else:
+                        # Patterns with number groups
+                        num_years = int(match.group(1))
+
                     if 1 <= num_years <= 10:  # Reasonable range
                         months = num_years * 12
                         # Store original period description for display
@@ -177,12 +197,15 @@ class CFOPlanner:
                 except:
                     continue
         
-        # Look for month-based patterns
+        # Look for month-based patterns (more flexible)
         month_patterns = [
             r'last\s+(\d+)\s+months?',
             r'past\s+(\d+)\s+months?',
             r'recent\s+(\d+)\s+months?',
-            r'(\d+)\s+months?'
+            r'previous\s+(\d+)\s+months?',
+            r'(\d+)\s+months?',
+            r'(\d+)\s*mo\b',  # "3mo", "6 mo"
+            r'(\d+)\s*m\b'    # "3m", "6 m"
         ]
         
         for pattern in month_patterns:
@@ -199,6 +222,40 @@ class CFOPlanner:
                 except:
                     continue
         
+        # Look for quarter-based patterns
+        quarter_patterns = [
+            r'last\s+quarter',
+            r'past\s+quarter',
+            r'this\s+quarter',
+            r'q\d',  # Q1, Q2, etc.
+            r'(\d+)\s*quarters?'
+        ]
+
+        for pattern in quarter_patterns:
+            match = re.search(pattern, question_lower)
+            if match:
+                try:
+                    if 'quarter' in pattern and '(' not in pattern:
+                        # Single quarter = 3 months
+                        months = 3
+                        display_period = '1 quarter'
+                    elif r'(\d+)' in pattern:
+                        # Multiple quarters
+                        num_quarters = int(match.group(1))
+                        months = num_quarters * 3
+                        display_period = f"{num_quarters} quarter{'s' if num_quarters > 1 else ''}"
+                    else:
+                        months = 3
+                        display_period = '1 quarter'
+
+                    return {
+                        'months': months,
+                        'display_period': display_period,
+                        'original_unit': 'quarters'
+                    }
+                except:
+                    continue
+
         # Default trend period
         return {
             'months': 3,

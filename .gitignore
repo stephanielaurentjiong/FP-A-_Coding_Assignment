@@ -32,3 +32,62 @@ htmlcov/
 
 # Environment variables
 .env
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Demo and development files (temporary ones only)
+# Keep test files as they're required deliverables
+# test_demo.py - keeping (part of development)
+# test_setup.py - keeping (part of development)
+# test_ui_design.py - keeping (part of development)
+# run_tests.py - keeping (part of development)
+
+# Data files (if they contain sensitive info)
+# Uncomment if data should not be shared
+# data.xlsx
+
+# Streamlit cache
+.streamlit/
+
+# mypy cache
+.mypy_cache/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Demo recordings and media files
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.gif
+*.png
+*.jpg
+*.jpeg
+# Uncomment above if you don't want to commit demo media files
+
+# Editor/IDE specific files
+*.sublime-*
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
