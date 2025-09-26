@@ -97,6 +97,8 @@ You should see `(.venv)` appear at the beginning of your command line.
 ### Install the required packages:
 ```bash
 pip install -r requirements.txt
+pip install streamlit
+pip install plotly
 ```
 
 This might take a few minutes. You'll see lots of text - that's normal!
